@@ -5,11 +5,13 @@ import { useRouter } from 'next/navigation'
 import { io } from 'socket.io-client'
 import { useCreateStory } from '@/hooks/useCreateStory'
 
-const steps = [
-  { text: 'Thinking...', duration: 2000 },
-  { text: 'Generating your story...', duration: 3000 },
-  { text: 'Creating beautiful pictures...', duration: 3000 },
-  { text: 'Finalizing everything...', duration: 2000 }
+const initialSteps = [
+  { text: 'Preparing your story...', completed: false },
+  { text: 'Generating your story with AI...', completed: false },
+  { text: 'Creating Chapter 1 image...', completed: false },
+  { text: 'Creating Chapter 2 image...', completed: false },
+  { text: 'Creating Chapter 3 image...', completed: false },
+  { text: 'Finalizing everything...', completed: false }
 ]
 
 const base64ToFile = (base64String, filename) => {
@@ -30,9 +32,12 @@ const base64ToFile = (base64String, filename) => {
 export default function GeneratingPage() {
   const router = useRouter()
   const [currentStep, setCurrentStep] = useState(0)
+  const [steps, setSteps] = useState(initialSteps)
   const [error, setError] = useState(null)
   const [storyData, setStoryData] = useState(null)
+  const [statusMessage, setStatusMessage] = useState('Starting story generation...')
   const socketRef = useRef(null)
+  const requestIdRef = useRef(null)
   const { createStory, isLoading } = useCreateStory()
 
   useEffect(() => {
@@ -51,14 +56,32 @@ export default function GeneratingPage() {
     }
 
     let interval = null
+    let userId = null
 
     const submitStory = async () => {
       try {
+        console.log('[API] Starting story submission process...')
         const userData = JSON.parse(user)
-        const userId = userData.id || userData.email || 'user_123'
+        userId = userData.id || userData.email || 'user_123'
+        console.log('[API] User ID:', userId)
 
         const formData = new FormData()
         formData.append('userId', userId)
+        console.log('[API] FormData created, userId appended')
+
+        // Check if mainCharacterImages is description object or image array
+        let mainCharacterDescription = null
+        if (parsedAnswers.mainCharacterImages && typeof parsedAnswers.mainCharacterImages === 'object' && !Array.isArray(parsedAnswers.mainCharacterImages)) {
+          mainCharacterDescription = parsedAnswers.mainCharacterImages
+          console.log('[API] Main character description found:', Object.keys(mainCharacterDescription))
+        }
+
+        // Check if storytellerImages is description object or image array
+        let storytellerDescription = null
+        if (parsedAnswers.storytellerImages && typeof parsedAnswers.storytellerImages === 'object' && !Array.isArray(parsedAnswers.storytellerImages)) {
+          storytellerDescription = parsedAnswers.storytellerImages
+          console.log('[API] Storyteller description found:', Object.keys(storytellerDescription))
+        }
 
         const questionnaireData = {
           storyAbout: parsedAnswers.storyAbout || '',
@@ -78,78 +101,213 @@ export default function GeneratingPage() {
           feelings: parsedAnswers.feelings || '',
           wishes: parsedAnswers.wishes || '',
           specialStory: parsedAnswers.specialStory || '',
-          additionalInfo: parsedAnswers.additionalInfo || ''
+          additionalInfo: parsedAnswers.additionalInfo || '',
+          mainCharacterDescription: mainCharacterDescription,
+          storytellerDescription: storytellerDescription
         }
 
         formData.append('questionnaireData', JSON.stringify(questionnaireData))
+        console.log('[API] Questionnaire data appended:', Object.keys(questionnaireData))
 
         if (parsedAnswers.mainCharacterImages && Array.isArray(parsedAnswers.mainCharacterImages)) {
+          console.log('[API] Processing main character images:', parsedAnswers.mainCharacterImages.length)
           parsedAnswers.mainCharacterImages.forEach((image, index) => {
             if (image) {
               let file
               if (image.file instanceof File) {
                 file = image.file
+                console.log(`[API] Main character image ${index + 1}: Using existing File object`)
               } else if (image.preview) {
                 const filename = image.name || `main-character-${index + 1}.jpg`
                 file = base64ToFile(image.preview, filename)
+                console.log(`[API] Main character image ${index + 1}: Converted from base64 to File`)
               }
               if (file) {
                 formData.append('mainCharacterImages', file)
+                console.log(`[API] Main character image ${index + 1} appended to FormData:`, file.name, file.size, 'bytes')
               }
             }
           })
+        } else if (!mainCharacterDescription) {
+          console.warn('[API] No main character images or description found')
         }
 
         if (parsedAnswers.storytellerImages && Array.isArray(parsedAnswers.storytellerImages)) {
+          console.log('[API] Processing storyteller images:', parsedAnswers.storytellerImages.length)
           parsedAnswers.storytellerImages.forEach((image, index) => {
             if (image) {
               let file
               if (image.file instanceof File) {
                 file = image.file
+                console.log(`[API] Storyteller image ${index + 1}: Using existing File object`)
               } else if (image.preview) {
                 const filename = image.name || `storyteller-${index + 1}.jpg`
                 file = base64ToFile(image.preview, filename)
+                console.log(`[API] Storyteller image ${index + 1}: Converted from base64 to File`)
               }
               if (file) {
                 formData.append('storytellerImages', file)
+                console.log(`[API] Storyteller image ${index + 1} appended to FormData:`, file.name, file.size, 'bytes')
               }
             }
           })
+        } else if (!storytellerDescription) {
+          console.warn('[API] No storyteller images or description found')
         }
+        
+        console.log('[API] FormData preparation complete')
 
+        console.log('[API] Submitting story creation request...')
         const response = await createStory(formData)
+        console.log('[API] Story creation response:', response)
         
         if (response.success && response.requestId) {
+          requestIdRef.current = response.requestId
+          console.log('[API] Story creation successful!')
+          console.log('[API] Request ID:', response.requestId)
+          console.log('[API] Status:', response.status)
+          setStatusMessage('Story generation started!')
+          setCurrentStep(1)
+
           const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'
+          console.log('[Socket] Initializing Socket.IO connection...')
+          console.log('[Socket] API Base URL:', API_BASE_URL)
           
           socketRef.current = io(API_BASE_URL, {
             transports: ['websocket', 'polling']
           })
+          
+          console.log('[Socket] Socket.IO instance created')
 
-          socketRef.current.on('story-complete', (data) => {
-            if (data.requestId === response.requestId) {
-              setStoryData(data)
-              setCurrentStep(steps.length - 1)
-            }
+          socketRef.current.on('connect', () => {
+            console.log('[Socket] Connected to server')
+            console.log('[Socket] Socket ID:', socketRef.current.id)
+            console.log('[Socket] Emitting join-room with userId:', userId)
+            socketRef.current.emit('join-room', { userId })
+            setStatusMessage('Connected. Waiting for story generation...')
           })
 
           socketRef.current.on('connect_error', (err) => {
-            console.error('Socket connection error:', err)
-            setError('Connection error. Please refresh the page.')
+            console.error('[Socket] Connection error:', err)
+            console.error('[Socket] Error details:', {
+              message: err.message,
+              type: err.type,
+              description: err.description
+            })
+            setStatusMessage('Connection issue. Will retry...')
           })
+
+          socketRef.current.on('disconnect', (reason) => {
+            console.log('[Socket] Disconnected from server')
+            console.log('[Socket] Disconnect reason:', reason)
+            if (reason === 'io server disconnect') {
+              console.log('[Socket] Server initiated disconnect')
+              setStatusMessage('Connection lost. Please refresh the page.')
+            }
+          })
+
+          socketRef.current.on('error', (err) => {
+            console.error('[Socket] Socket error:', err)
+            console.error('[Socket] Error details:', {
+              message: err.message,
+              type: err.type
+            })
+            setStatusMessage('An error occurred. Please try again.')
+          })
+
+          socketRef.current.on('story-started', (data) => {
+            console.log('[Socket] Received story-started event')
+            console.log('[Socket] Event data:', data)
+            if (data.requestId === requestIdRef.current) {
+              console.log('[Socket] Story started confirmed!')
+              setStatusMessage(data.message || 'Story generation process has started')
+            }
+          })
+
+          socketRef.current.on('story-progress', (data) => {
+            console.log('[Socket] Received story-progress event')
+            console.log('[Socket] Event data:', data)
+            if (data.requestId === requestIdRef.current) {
+              console.log(`[Socket] Progress update: ${data.progress} (Step: ${data.step})`)
+              setStatusMessage(data.progress)
+              if (data.step) {
+                setCurrentStep(Math.min(data.step, initialSteps.length - 1))
+              }
+            }
+          })
+
+          socketRef.current.on('story-complete', (data) => {
+            console.log('[Socket] Received story-complete event')
+            console.log('[Socket] Event data:', data)
+            console.log('[Socket] Request ID from event:', data.requestId)
+            console.log('[Socket] Current request ID:', requestIdRef.current)
+            console.log('[Socket] Chapters count:', data.chapters?.length || 0)
+            
+            if (data.requestId === requestIdRef.current) {
+              console.log('[Socket] Request ID matches! Processing story completion...')
+              setStoryData(data)
+              setStatusMessage(data.message || 'Story generation complete!')
+              setSteps(prev => prev.map(step => ({ ...step, completed: true })))
+              setCurrentStep(initialSteps.length - 1)
+              console.log('[Socket] Story data set successfully')
+            } else {
+              console.warn('[Socket] Request ID mismatch. Ignoring event.')
+            }
+          })
+
+          socketRef.current.on('story-failed', (data) => {
+            console.error('[Socket] Received story-failed event')
+            console.error('[Socket] Event data:', data)
+            console.error('[Socket] Request ID from event:', data.requestId)
+            console.error('[Socket] Current request ID:', requestIdRef.current)
+            console.error('[Socket] Error message:', data.error)
+            
+            if (data.requestId === requestIdRef.current) {
+              console.error('[Socket] Request ID matches! Processing story failure...')
+              setError(data.error || 'Story generation failed. Please try again.')
+            } else {
+              console.warn('[Socket] Request ID mismatch. Ignoring failure event.')
+            }
+          })
+
+          console.log('[Socket] All event listeners registered')
+          console.log('[Socket] Waiting for connection...')
         }
 
         let currentStepIndex = 0
+        let storyCompleted = false
         interval = setInterval(() => {
-          currentStepIndex++
-          if (currentStepIndex >= steps.length) {
-            clearInterval(interval)
-          } else {
+          if (currentStepIndex < initialSteps.length - 1 && !storyCompleted) {
+            currentStepIndex++
             setCurrentStep(currentStepIndex)
+            
+            if (currentStepIndex === 1) {
+              setStatusMessage('AI is writing your story...')
+              console.log('[Progress] Step 1: AI is writing your story...')
+            } else if (currentStepIndex >= 2 && currentStepIndex <= 4) {
+              const chapterNum = currentStepIndex - 1
+              setStatusMessage(`Creating beautiful image for Chapter ${chapterNum}...`)
+              console.log(`[Progress] Step ${currentStepIndex}: Creating Chapter ${chapterNum} image...`)
+            } else if (currentStepIndex === 5) {
+              setStatusMessage('Putting everything together...')
+              console.log('[Progress] Step 5: Finalizing everything...')
+            }
+          } else {
+            console.log('[Progress] Progress interval stopped')
+            clearInterval(interval)
           }
-        }, steps[currentStepIndex]?.duration || 2000)
+        }, 3000)
+        
+        socketRef.current?.on('story-complete', () => {
+          storyCompleted = true
+        })
       } catch (err) {
-        console.error('Error creating story:', err)
+        console.error('[API] Error creating story:', err)
+        console.error('[API] Error details:', {
+          message: err.message,
+          stack: err.stack,
+          name: err.name
+        })
         setError(err.message || 'Failed to create story. Please try again.')
       }
     }
@@ -168,7 +326,7 @@ export default function GeneratingPage() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-linear-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-3xl shadow-lg p-8 sm:p-12 max-w-lg w-full text-center">
           <div className="mb-6">
             <div className="inline-block p-4 bg-red-100 rounded-full mb-4">
@@ -192,7 +350,7 @@ export default function GeneratingPage() {
             <p className="text-gray-600 mb-6">{error}</p>
             <button
               onClick={() => router.push('/questionnaire/1')}
-              className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-semibold py-3 px-6 rounded-full transition-all duration-300"
+              className="bg-linear-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-semibold py-3 px-6 rounded-full transition-all duration-300"
             >
               Try Again
             </button>
@@ -204,7 +362,7 @@ export default function GeneratingPage() {
 
   if (storyData && storyData.chapters) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-linear-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-3xl shadow-lg p-8 sm:p-12 max-w-lg w-full text-center">
           <div className="mb-6">
             <div className="inline-block p-4 bg-green-100 rounded-full mb-4">
@@ -230,7 +388,7 @@ export default function GeneratingPage() {
             </p>
             <button
               onClick={() => router.push('/')}
-              className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-semibold py-3 px-6 rounded-full transition-all duration-300"
+              className="bg-linear-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-semibold py-3 px-6 rounded-full transition-all duration-300"
             >
               View Story
             </button>
@@ -241,7 +399,7 @@ export default function GeneratingPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-linear-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4">
       <div className="bg-white rounded-3xl shadow-lg p-8 sm:p-12 max-w-lg w-full text-center">
         <div className="mb-8">
           <div className="inline-block relative">
@@ -251,9 +409,13 @@ export default function GeneratingPage() {
           </div>
         </div>
 
-        <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-8">
+        <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-4">
           Creating Your Story
         </h2>
+
+        <p className="text-purple-600 font-medium mb-8">
+          {statusMessage}
+        </p>
 
         <div className="space-y-4 mb-6">
           {steps.map((step, index) => (
@@ -267,14 +429,14 @@ export default function GeneratingPage() {
             >
               <div
                 className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${
-                  index < currentStep
-                    ? 'bg-gradient-to-br from-purple-500 to-pink-500'
+                  step.completed || index < currentStep
+                    ? 'bg-linear-to-br from-purple-500 to-pink-500'
                     : index === currentStep
-                    ? 'bg-gradient-to-br from-purple-500 to-pink-500 animate-pulse'
+                    ? 'bg-linear-to-br from-purple-500 to-pink-500 animate-pulse'
                     : 'bg-gray-300'
                 }`}
               >
-                {index < currentStep ? (
+                {step.completed || index < currentStep ? (
                   <svg
                     className="w-4 h-4 text-white"
                     fill="currentColor"
@@ -300,7 +462,7 @@ export default function GeneratingPage() {
         </div>
 
         <p className="text-gray-500 text-sm">
-          This may take a few moments. Please don&apos;t close this page.
+          This may take a few minutes. Please don&apos;t close this page.
         </p>
       </div>
     </div>

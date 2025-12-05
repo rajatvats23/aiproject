@@ -59,7 +59,21 @@ export default function QuestionnairePage() {
     if (!question.required) return true
     
     if (question.type === 'image-upload') {
-      return Array.isArray(answer) && answer.length >= (question.minImages || 1)
+      // Check if images are uploaded (array with length >= minImages)
+      if (Array.isArray(answer) && answer.length >= (question.minImages || 1)) {
+        return true
+      }
+      // Check if description is provided (object with keys)
+      if (answer && typeof answer === 'object' && !Array.isArray(answer) && Object.keys(answer).length > 0) {
+        // Validate that at least some key questions are answered
+        const requiredKeys = ['hairColor', 'skinTone', 'personality']
+        const hasRequiredAnswers = requiredKeys.some(key => {
+          const value = answer[key]
+          return value && (typeof value === 'string' ? value.trim().length > 0 : true)
+        })
+        return hasRequiredAnswers
+      }
+      return false
     }
     
     if (typeof answer === 'string') {
